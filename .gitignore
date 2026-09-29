@@ -1,0 +1,31 @@
+# Secrets
+.env
+
+# Data (lives in HDFS / MinIO / MongoDB, never in git)
+*.json.gz
+data/
+exports/
+tmp/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Java / MapReduce builds
+*.class
+*.jar
+target/
+
+# Airflow runtime
+airflow/logs/
+airflow/airflow.db
+airflow/airflow.cfg
+airflow/standalone_admin_password.txt
+
+# R / OS / editors
+.Rhistory
+.RData
+.Rproj.user/
+.DS_Store
+.vscode/

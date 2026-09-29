@@ -1,0 +1,43 @@
+# Gitlytics supporting services: MinIO (raw landing zone) + MongoDB (lab 3).
+# Hadoop, Hive, Pig and Airflow run natively in WSL2, not here.
+#
+# Usage:  cp .env.example .env   (then edit passwords)
+#         docker compose up -d
+#
+# MinIO: the official community image and binary were discontinued in 2025,
+# so we use Chainguard's maintained build. The gh-raw bucket is created by the
+# ingestion code on first upload.
+
+services:
+  minio:
+    image: chainguard/minio:latest
+    container_name: gitlytics-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9100:9000"   # S3 API (host 9100: Hadoop NameNode already uses 9000)
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    mem_limit: 1g
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7.0
+    container_name: gitlytics-mongo
+    command: ["--wiredTigerCacheSizeGB", "1"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    ports:
+      - "27018:27017"   # host 27018: a Windows MongoDB service already uses 27017
+    volumes:
+      - mongo_data:/data/db
+    mem_limit: 2g
+    restart: unless-stopped
+
+volumes:
+  minio_data:
+  mongo_data:
