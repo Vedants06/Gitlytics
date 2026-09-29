@@ -1,5 +1,5 @@
-# Gitlytics supporting services: MinIO (raw landing zone) + MongoDB (lab 3).
-# Hadoop, Hive, Pig and Airflow run natively in WSL2, not here.
+# Gitlytics supporting services: MinIO (raw landing zone), MongoDB (lab 3), Postgres (Airflow metadata).
+# Hadoop, Hive, Pig and Airflow itself run natively in WSL2, not here.
 #
 # Usage:  cp .env.example .env   (then edit passwords)
 #         docker compose up -d
@@ -38,6 +38,25 @@ services:
     mem_limit: 2g
     restart: unless-stopped
 
+  airflow-db:
+    image: postgres:16
+    container_name: gitlytics-airflow-db
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"   # host 5433: a Windows PostgreSQL service already uses 5432
+    volumes:
+      - airflow_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_DB_USER}", "-d", "airflow"]
+      interval: 10s
+      retries: 5
+    mem_limit: 512m
+    restart: unless-stopped
+
 volumes:
   minio_data:
   mongo_data:
+  airflow_db:

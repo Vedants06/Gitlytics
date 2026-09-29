@@ -367,10 +367,13 @@ gitlytics/
 │   ├── pipeline.yaml              HDFS paths, MinIO bucket, date ranges
 │   ├── known_bots.txt             seed list for is_bot and the Bloom filter
 │   └── stopwords.txt              for the word count
+├── scripts/
+│   └── env.sh                     source in every terminal: .env, Java, Hadoop, venv, Airflow settings
 ├── setup/
 │   ├── install_hadoop.sh          Hadoop 3.3.6 pseudo-distributed in WSL2
 │   ├── install_hive.sh            Hive 3.1.3 + guava fix + Derby metastore
 │   ├── install_pig.sh             Pig 0.17.0
+│   ├── install_airflow.sh         Airflow 2.11.2 + requirements into .venv
 │   ├── hadoop-conf/               core-site, hdfs-site, mapred-site, yarn-site
 │   └── wslconfig.example          memory limit for WSL2
 ├── airflow/
@@ -379,11 +382,14 @@ gitlytics/
 │   │   ├── gh_backfill.py
 │   │   ├── gh_silver_build.py
 │   │   └── gh_daily_analytics.py
-│   └── plugins/gitlytics/          shared helpers (download, validate, hdfs, minio)
+│   (DAGs import the ingestion package; scripts/env.sh puts the repo root on PYTHONPATH)
 ├── ingestion/
-│   ├── download.py                fetch one hour, with retries
-│   ├── validate.py                gzip, JSON and line-count checks
-│   └── schema_probe.py            detect era (v2024/v2026) and field coverage
+│   ├── config.py                  settings from .env (endpoints, paths, thresholds)
+│   ├── gharchive.py               hour naming, publish check, download, validate + era detection
+│   ├── storage.py                 MinIO upload, HDFS bronze put
+│   ├── ingest_log.py              one MongoDB document per hour
+│   ├── pipeline.py                ingest_hour(): the end-to-end step both DAGs call
+│   └── cli.py                     run the same ingestion by hand, without Airflow
 ├── mapreduce/
 │   ├── flatten/                   Hadoop Streaming: bronze JSON → silver TSV
 │   ├── wordcount/                 Java: WordCount mapper, combiner, reducer, driver (lab 2)
@@ -433,7 +439,7 @@ gitlytics/
 
 ## 11. Environment and tooling
 
-Everything runs on one Windows 11 laptop. Hadoop, Hive, Pig and Airflow run natively in WSL2 (Ubuntu 22.04); MinIO and MongoDB run in Docker Desktop with WSL integration.
+Everything runs on one Windows 11 laptop. Hadoop, Hive, Pig and Airflow run natively in WSL2 (Ubuntu 24.04); MinIO, MongoDB and the Airflow metadata database (Postgres) run in Docker Desktop with WSL integration.
 
 | Component | Version | Runs in | Notes |
 |---|---|---|---|
@@ -441,8 +447,8 @@ Everything runs on one Windows 11 laptop. Hadoop, Hive, Pig and Airflow run nati
 | Hadoop | 3.3.6 | WSL2 | Pseudo-distributed, replication 1, block size 128 MB |
 | Hive | 3.1.3 | WSL2 | Replace `hive/lib/guava-19.0.jar` with Hadoop's `guava-27.0-jre.jar`, or Hive fails at startup; Derby metastore |
 | Pig | 0.17.0 | WSL2 | MapReduce mode |
-| Airflow | 2.10.x | WSL2, Python venv | LocalExecutor + PostgreSQL, or `airflow standalone` for a start |
-| Python | 3.11 | WSL2 | `requests`, `minio`, `pymongo`, `mmh3`, `networkx`, `python-louvain`, `pandas` |
+| Airflow | 2.11.2 | WSL2, `.venv` | LocalExecutor; metadata in the `gitlytics-airflow-db` Postgres container on host port 5433 (5432 is taken by a Windows PostgreSQL); UI on port 8080 |
+| Python | 3.12 | WSL2 | `requests`, `minio`, `pymongo`, `mmh3`, `networkx`, `python-louvain`, `pandas` |
 | MinIO | `chainguard/minio:latest` | Docker | Console on port 9001, API on host port 9100 (9000 is taken by the HDFS NameNode); the `gh-raw` bucket is created by the ingestion code |
 | MongoDB | 7.0 | Docker | Host port 27018 (27017 is taken by a MongoDB service installed on Windows); volume on the WSL2 disk |
 | R | 4.4 | Windows or WSL2 | `ggplot2`, `dplyr`, `data.table`, `lubridate`, `igraph` |
@@ -460,7 +466,7 @@ Everything runs on one Windows 11 laptop. Hadoop, Hive, Pig and Airflow run nati
 
 ### Phase 1: Environment (week 1)
 
-- [ ] Install WSL2 Ubuntu 22.04, set `.wslconfig` memory to 10 GB
+- [ ] Install WSL2 Ubuntu 24.04, set `.wslconfig` memory to 10 GB
 - [ ] Install Java 8 and Hadoop 3.3.6; format the NameNode; start HDFS and YARN
 - [ ] Create the `/gitlytics` HDFS layout; capture the **Exp 1** screenshots
 - [ ] Install Hive 3.1.3 (guava fix) and Pig 0.17.0; run a smoke test on each
@@ -470,7 +476,7 @@ Everything runs on one Windows 11 laptop. Hadoop, Hive, Pig and Airflow run nati
 
 ### Phase 2: Ingestion (week 2)
 
-- [ ] `download.py`, `validate.py`, `schema_probe.py` with unit tests
+- [x] `ingestion` package: download, validate with era detection, MinIO, HDFS, ingest log
 - [ ] `gh_hourly_ingest` DAG with HTTP sensor, retries, MinIO upload and HDFS put
 - [ ] `gh_backfill` DAG; load 2024-09-28 and 2024-09-29 (48 files)
 - [ ] **Go live:** switch on the hourly DAG (the clock for 7+ days of data starts here)
@@ -576,7 +582,7 @@ Live data     ........███████████████████�
 | Disk fills up | Medium | High | Delete local temp files after upload; keep only 2 bronze copies; watch `hdfs dfs -df -h` |
 | Laptop asleep, hours missed | High | Low | Catchup on (D5); GH Archive keeps every file |
 | A GH Archive hour is late or missing | Low | Low | Sensor waits up to 2 h, then the run fails and is recorded in `ingest_log` as a gap |
-| GitHub changes the payload again | Low | Medium | `schema_probe.py` detects the era; unknown shapes go to quarantine, not into silver |
+| GitHub changes the payload again | Low | Medium | `gharchive.validate()` detects the era; unknown shapes go to quarantine, not into silver |
 | Too few stars for the recommender | Medium | Medium | Seed with 2024 backfill stars; add more backfill days if hit-rate evaluation has fewer than 1,000 users |
 | Only one laptop can run the stack | Medium | Medium | Member B works from exported CSVs and MongoDB dumps |
 

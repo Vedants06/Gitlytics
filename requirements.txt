@@ -1,0 +1,6 @@
+# Airflow itself is installed by setup/install_airflow.sh (it needs the official constraints file).
+# Versions below match the Airflow 2.11.2 / Python 3.12 constraints where they overlap.
+minio>=7.2,<8
+pymongo==4.16.0
+requests==2.32.5
+pytest>=8

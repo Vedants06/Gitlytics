@@ -29,3 +29,5 @@ airflow/standalone_admin_password.txt
 .Rproj.user/
 .DS_Store
 .vscode/
+airflow/webserver_config.py
+airflow/airflow-webserver.pid
