@@ -6,9 +6,11 @@ catchup=True: if the laptop was off, missed hours are fetched when Airflow resta
 After ingestion, Hive flattens that hour into the silver tables.
 """
 
+import logging
 from datetime import timedelta
 
 import pendulum
+import requests
 from airflow.decorators import dag, task
 from airflow.operators.bash import BashOperator
 
@@ -32,7 +34,13 @@ def gh_hourly_ingest():
 
     @task.sensor(task_id="wait_for_file", poke_interval=300, timeout=2 * 3600, mode="reschedule")
     def wait_for_file(data_interval_start=None) -> bool:
-        return is_published(data_interval_start)
+        # A network or SSL error (common for a minute after WSL resumes from sleep) means
+        # "try again at the next poke", not "fail the run".
+        try:
+            return is_published(data_interval_start)
+        except requests.RequestException as error:
+            logging.warning("Could not check GH Archive yet: %s", error)
+            return False
 
     @task(task_id="ingest")
     def ingest(data_interval_start=None) -> dict:

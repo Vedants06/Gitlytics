@@ -487,9 +487,9 @@ Everything runs on one Windows 11 laptop. Hadoop, Hive, Pig and Airflow run nati
 
 - [x] Hive silver build: bronze JSON table → 5 silver tables, with de-duplication, bot flag and era
 - [x] `build_silver` task runs after each hourly ingest
-- [ ] **Exp 2:** Java WordCount with combiner and stop-words on commit messages and issue titles
+- [x] **Exp 2:** Java WordCount (Mapper, Combiner, Reducer, Driver) with stop-words via the distributed cache, chained into a top-50 job. Silver mode: 7.2M commits, 48 map tasks, combiner cut shuffle by 92.6%. Raw mode reads the bronze `.json.gz` directly
 - [ ] Stars-per-repo-per-day MapReduce job
-- [ ] Record job counters (map tasks, input records, combine ratio)
+- [x] Record job counters (map tasks, input records, combine ratio, custom counters) in `exports/wordcount_*_counters.txt`
 
 ### Phase 4: Warehouse and NoSQL (week 4)
 

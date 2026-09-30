@@ -31,3 +31,6 @@ airflow/standalone_admin_password.txt
 .vscode/
 airflow/webserver_config.py
 airflow/airflow-webserver.pid
+
+# MapReduce build output
+mapreduce/build/
