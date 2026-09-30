@@ -42,7 +42,7 @@ We are switching from the food-inflation topic to GitHub event analytics. The ne
 | D6 | Raw storage | MinIO bucket as the landing zone (bronze) | Keeps an untouched copy of every file; re-runs never re-download. Image: `chainguard/minio`, because the official community image and binary were discontinued in 2025 |
 | D7 | Lake storage | HDFS, partitioned by date and hour | Syllabus requirement; one hourly file per partition |
 | D8 | Raw file format in HDFS | Keep `.json.gz` as-is | Hadoop reads gzip natively; each hourly file becomes one map task, so the parallelism is real |
-| D9 | Cleaned format (silver) | Tab-separated text, one table per event family | Readable by MapReduce, Hive and Pig with no extra libraries |
+| D9 | Cleaned format (silver) | Tab-separated text, one table per event family, built by Hive from a JSON-SerDe table over the raw `.json.gz` files | Readable by MapReduce, Hive and Pig with no extra libraries. One multi-table INSERT scans bronze once for 4 tables, and Hive runs it as MapReduce with one map task per hourly file, so no separate conversion job is needed |
 | D10 | Warehouse | Hive external tables over silver and gold | Syllabus tool; takes the role Snowflake would have |
 | D11 | Snowflake | Not used | The trial expires after 30 days, and it is not a Hadoop-ecosystem tool |
 | D12 | NoSQL | MongoDB, one full day of raw events with nested payloads | Native JSON; aggregation pipelines per event type |
@@ -94,7 +94,7 @@ The project succeeds when the pipeline runs unattended for 7 days and every lab 
 | Hourly ingestion success | 99% of hours landed within 30 min of publication (while the laptop is on) | Airflow task history over 7 days |
 | Total events in HDFS | 25 million or more | `hdfs dfs -du -h` and Hive `COUNT(*)` |
 | Parallel map tasks | 1 per hourly file (48+ in one job) | MapReduce job counters screenshot |
-| Silver parse errors | Under 0.1% of lines | Counter in the flatten job |
+| Silver parse errors | Under 0.1% of lines | Hive: bronze rows vs silver `events` rows per hour |
 | Duplicate events after cleaning | 0 by event id | Hive `COUNT(DISTINCT event_id)` vs `COUNT(*)` |
 | Bloom filter false-positive rate | Within 20% of the theoretical rate | Measured vs formula, in a table |
 | Flajolet-Martin error | Under 15% vs the exact distinct count | Estimate vs Hive exact count, per hour |
@@ -150,7 +150,7 @@ The pipeline records an `era` (`v2024` / `v2026`) on every row. Each job knows w
                                      │
                                      ▼
 ┌─────────────────────────────── Apache Airflow (WSL2) ────────────────────────────────┐
-│  gh_hourly_ingest ──► gh_silver_build ──► gh_daily_analytics      gh_backfill (manual)│
+│  gh_hourly_ingest (+ build_silver) ──► gh_daily_analytics  gh_backfill (manual)│
 └──────┬──────────────────────┬─────────────────────────┬──────────────────────────────┘
        │ upload               │ hdfs dfs -put           │ runs jobs
        ▼                      ▼                         ▼
@@ -191,7 +191,7 @@ Data moves through three layers (bronze, silver, gold), driven by four Airflow D
 |---|---|---|---|---|
 | Landing (bronze) | MinIO `gh-raw/YYYY/MM/DD/` | `.json.gz`, untouched | Exact file from GH Archive | `gh_hourly_ingest` |
 | Raw lake (bronze) | HDFS `/gitlytics/bronze/dt=/hr=/` | `.json.gz`, untouched | Same file, used as MapReduce input | `gh_hourly_ingest` |
-| Silver | HDFS `/gitlytics/silver/<table>/dt=/hr=/` | Tab-separated text | Flattened, de-duplicated, typed, bot-flagged rows | `gh_silver_build` |
+| Silver | HDFS `/gitlytics/silver/<table>/dt=/hr=/` | Tab-separated text | Flattened, de-duplicated, typed, bot-flagged rows | `build_silver` task in `gh_hourly_ingest` (`scripts/build_silver.sh`) |
 | Gold | HDFS `/gitlytics/gold/<metric>/dt=/` | Tab-separated text | Trends, bot scores, recommendations, communities | `gh_daily_analytics` |
 | Serving | `exports/` CSV + MongoDB | CSV, JSON | Inputs for R, Power BI and the report | `gh_daily_analytics` |
 
@@ -201,7 +201,7 @@ Data moves through three layers (bronze, silver, gold), driven by four Airflow D
 |---|---|---|
 | `gh_hourly_ingest` | `@hourly` with a 10-min offset, catchup on, `max_active_runs=3` | 1. HTTP sensor waits for the file (checks every 5 min, times out after 2 h). 2. Download to a local temp folder. 3. Validate: gzip opens, over 1,000 lines, every line is JSON. 4. Upload to MinIO. 5. `hdfs dfs -put -f` into the bronze partition. 6. Write the row count to `ingest_log`. 7. Delete the temp file. |
 | `gh_backfill` | Manual, with a start and end hour as parameters | The same steps over a range of past hours. Used for 2024-09-28 and 2024-09-29. |
-| `gh_silver_build` | Triggered after each successful ingest | 1. Flatten (Hadoop Streaming job). 2. Drop duplicate event ids. 3. Flag bots. 4. Split into silver tables. 5. `ALTER TABLE ... ADD PARTITION`. 6. Record the schema-drift check. |
+| `build_silver` (task inside `gh_hourly_ingest`) | After each successful ingest, one at a time | `scripts/build_silver.sh <dt> <hr>`: 1. Add the bronze partition. 2. Hive multi-table INSERT: de-duplicate by event id, flag bots (`[bot]` suffix or `known_bots`), tag era, write events, stars, issues and comments. 3. Explode push commits into `commits`. With no arguments it rebuilds every partition. |
 | `gh_daily_analytics` | `@daily` at 01:00 UTC | 1. MapReduce jobs. 2. Hive gold queries. 3. Pig bot scoring. 4. Stream-algorithm replay over the previous day. 5. Load one day into MongoDB (first run only). 6. Export CSVs for R and Power BI. |
 
 ### Cleaning rules (silver build)
@@ -334,11 +334,13 @@ Events are replayed in `created_at` order to simulate a live stream.
 
 | Table | Columns | Partitioned by |
 |---|---|---|
+| `bronze_events` | Raw JSON via `JsonSerDe`: `id, type, actor<id,login>, repo<id,name>, payload<action, commits, issue, comment>, created_at` | `dt STRING, hr INT` |
+| `known_bots` | `login STRING` (seed list, grows from Pig bot scoring) | none |
 | `events` | `event_id BIGINT, event_type STRING, actor_login STRING, is_bot BOOLEAN, repo_owner STRING, repo STRING, created_at TIMESTAMP, weekday STRING, era STRING` | `dt STRING, hr INT` |
-| `stars` | `actor_login STRING, repo_owner STRING, repo STRING, created_at TIMESTAMP` | `dt, hr` |
-| `commits` | `repo STRING, actor_login STRING, sha STRING, message STRING` | `dt, hr` |
-| `issues` | `repo STRING, actor_login STRING, action STRING, issue_number INT, title STRING` | `dt, hr` |
-| `comments` | `repo STRING, actor_login STRING, issue_number INT, body_length INT, body STRING` | `dt, hr` |
+| `stars` | `actor_login STRING, is_bot BOOLEAN, repo_owner STRING, repo STRING, created_at TIMESTAMP` | `dt, hr` |
+| `commits` | `repo_owner STRING, repo STRING, actor_login STRING, is_bot BOOLEAN, sha STRING, message STRING, created_at TIMESTAMP` | `dt, hr` |
+| `issues` | `repo_owner STRING, repo STRING, actor_login STRING, is_bot BOOLEAN, action STRING, issue_number INT, title STRING, created_at TIMESTAMP` | `dt, hr` |
+| `comments` | `repo_owner STRING, repo STRING, actor_login STRING, is_bot BOOLEAN, issue_number INT, body_length INT, body STRING, created_at TIMESTAMP` | `dt, hr` |
 | `trending_daily` | `repo STRING, stars_24h INT, baseline DOUBLE, trend_score DOUBLE, rank INT` | `dt` |
 | `bot_scores` | `actor_login STRING, events INT, distinct_repos INT, active_hours INT, rules_fired STRING, bot_score INT, is_labelled_bot BOOLEAN` | `dt` |
 | `recommendations` | `actor_login STRING, rank INT, repo STRING, score DOUBLE` | `dt` |
@@ -371,7 +373,7 @@ gitlytics/
 │   └── env.sh                     source in every terminal: .env, Java, Hadoop, venv, Airflow settings
 ├── setup/
 │   ├── install_hadoop.sh          Hadoop 3.3.6 pseudo-distributed in WSL2
-│   ├── install_hive.sh            Hive 3.1.3 + guava fix + Derby metastore
+│   ├── install_hive.sh            Hive 3.1.3 + guava fix + Postgres metastore
 │   ├── install_pig.sh             Pig 0.17.0
 │   ├── install_airflow.sh         Airflow 2.11.2 + requirements into .venv
 │   ├── hadoop-conf/               core-site, hdfs-site, mapred-site, yarn-site
@@ -380,7 +382,6 @@ gitlytics/
 │   ├── dags/
 │   │   ├── gh_hourly_ingest.py
 │   │   ├── gh_backfill.py
-│   │   ├── gh_silver_build.py
 │   │   └── gh_daily_analytics.py
 │   (DAGs import the ingestion package; scripts/env.sh puts the repo root on PYTHONPATH)
 ├── ingestion/
@@ -391,7 +392,7 @@ gitlytics/
 │   ├── pipeline.py                ingest_hour(): the end-to-end step both DAGs call
 │   └── cli.py                     run the same ingestion by hand, without Airflow
 ├── mapreduce/
-│   ├── flatten/                   Hadoop Streaming: bronze JSON → silver TSV
+│   (silver is built by Hive: hive/10_build_silver.hql)
 │   ├── wordcount/                 Java: WordCount mapper, combiner, reducer, driver (lab 2)
 │   ├── stars_per_repo/            Java: stars per repo per day
 │   └── copairs/                   Java: co-starred repo pairs (recommender)
@@ -432,7 +433,7 @@ gitlytics/
 └── tests/
     ├── test_validate.py
     ├── test_bloom_filter.py
-    └── test_flatten.py
+    └── test_gharchive.py
 ```
 
 ---
@@ -445,8 +446,8 @@ Everything runs on one Windows 11 laptop. Hadoop, Hive, Pig and Airflow run nati
 |---|---|---|---|
 | Java | OpenJDK 8 | WSL2 | Hive 3.1.3 and Pig 0.17 need Java 8 |
 | Hadoop | 3.3.6 | WSL2 | Pseudo-distributed, replication 1, block size 128 MB |
-| Hive | 3.1.3 | WSL2 | Replace `hive/lib/guava-19.0.jar` with Hadoop's `guava-27.0-jre.jar`, or Hive fails at startup; Derby metastore |
-| Pig | 0.17.0 | WSL2 | MapReduce mode |
+| Hive | 3.1.3 | WSL2 | Replace `hive/lib/guava-19.0.jar` with Hadoop's `guava-27.0-jre.jar`, or Hive fails at startup. Metastore: `metastore` database in the Postgres container (not embedded Derby, which allows only one Hive session at a time). Hive 4.x not used: it drops the classic `hive` CLI and defaults to Tez |
+| Pig | 0.17.0 | WSL2 | MapReduce mode; `PIG_CLASSPATH` = Hadoop conf dir |
 | Airflow | 2.11.2 | WSL2, `.venv` | LocalExecutor; metadata in the `gitlytics-airflow-db` Postgres container on host port 5433 (5432 is taken by a Windows PostgreSQL); UI on port 8080 |
 | Python | 3.12 | WSL2 | `requests`, `minio`, `pymongo`, `mmh3`, `networkx`, `python-louvain`, `pandas` |
 | MinIO | `chainguard/minio:latest` | Docker | Console on port 9001, API on host port 9100 (9000 is taken by the HDFS NameNode); the `gh-raw` bucket is created by the ingestion code |
@@ -466,26 +467,26 @@ Everything runs on one Windows 11 laptop. Hadoop, Hive, Pig and Airflow run nati
 
 ### Phase 1: Environment (week 1)
 
-- [ ] Install WSL2 Ubuntu 24.04, set `.wslconfig` memory to 10 GB
-- [ ] Install Java 8 and Hadoop 3.3.6; format the NameNode; start HDFS and YARN
+- [x] Install WSL2 Ubuntu 24.04, set `.wslconfig` memory to 10 GB
+- [x] Install Java 8 and Hadoop 3.3.6; format the NameNode; start HDFS and YARN
 - [ ] Create the `/gitlytics` HDFS layout; capture the **Exp 1** screenshots
-- [ ] Install Hive 3.1.3 (guava fix) and Pig 0.17.0; run a smoke test on each
-- [ ] `docker compose up` MinIO and MongoDB; create the `gh-raw` bucket
-- [ ] Install Airflow in a venv; confirm a hello-world DAG runs
+- [x] Install Hive 3.1.3 (guava fix) and Pig 0.17.0; run a smoke test on each
+- [x] `docker compose up` MinIO and MongoDB; create the `gh-raw` bucket
+- [x] Install Airflow in a venv; confirm a hello-world DAG runs
 - [ ] Download one 2024 hour and one 2026 hour; confirm the schema-drift table in section 4
 
 ### Phase 2: Ingestion (week 2)
 
 - [x] `ingestion` package: download, validate with era detection, MinIO, HDFS, ingest log
-- [ ] `gh_hourly_ingest` DAG with HTTP sensor, retries, MinIO upload and HDFS put
+- [x] `gh_hourly_ingest` DAG with HTTP sensor, retries, MinIO upload and HDFS put
 - [ ] `gh_backfill` DAG; load 2024-09-28 and 2024-09-29 (48 files)
-- [ ] **Go live:** switch on the hourly DAG (the clock for 7+ days of data starts here)
+- [x] **Go live:** switch on the hourly DAG (the clock for 7+ days of data starts here)
 - [ ] `ingest_log` in MongoDB; check for gaps each day
 
 ### Phase 3: Silver layer and MapReduce (week 3)
 
-- [ ] Hadoop Streaming flatten job: bronze → 5 silver tables, with de-duplication and the bot flag
-- [ ] `gh_silver_build` DAG triggered after each ingest
+- [x] Hive silver build: bronze JSON table → 5 silver tables, with de-duplication, bot flag and era
+- [x] `build_silver` task runs after each hourly ingest
 - [ ] **Exp 2:** Java WordCount with combiner and stop-words on commit messages and issue titles
 - [ ] Stars-per-repo-per-day MapReduce job
 - [ ] Record job counters (map tasks, input records, combine ratio)
@@ -559,7 +560,7 @@ Live data     ........███████████████████�
 | Area | Member A (pipeline) | Member B (analytics) |
 |---|---|---|
 | Environment | Hadoop, Hive, Pig, Airflow setup | MinIO, MongoDB (Docker), R setup |
-| Ingestion and silver | All DAGs, flatten job, validation | Reviews data quality reports |
+| Ingestion and silver | All DAGs, Hive silver build, validation | Reviews data quality reports |
 | Exp 1: HDFS | Owner | Screenshots on their own machine, if possible |
 | Exp 2: MapReduce | Owner | Picks stop-words, interprets results |
 | Exp 3: MongoDB | Support | Owner |

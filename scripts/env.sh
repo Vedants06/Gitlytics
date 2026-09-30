@@ -30,3 +30,9 @@ export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="postgresql+psycopg2://${AIRFLOW_DB_U
 export AIRFLOW__WEBSERVER__WEB_SERVER_PORT=8080
 # Silence the Airflow 3 timer-unit deprecation warning
 export AIRFLOW__METRICS__TIMER_UNIT_CONSISTENCY=True
+
+# Hive + Pig (installed by setup/install_hive.sh and setup/install_pig.sh)
+export HIVE_HOME="$HOME/bigdata/hive"
+export PIG_HOME="$HOME/bigdata/pig"
+export PIG_CLASSPATH="$HADOOP_CONF_DIR"
+export PATH="$PATH:$HIVE_HOME/bin:$PIG_HOME/bin"

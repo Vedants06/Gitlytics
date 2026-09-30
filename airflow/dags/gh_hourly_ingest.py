@@ -1,15 +1,18 @@
-"""Hourly GH Archive ingestion (decision D5).
+"""Hourly GH Archive ingestion (decision D5) and silver build.
 
 Each run covers one data interval [H, H+1) and fires at H+1. GH Archive publishes the
 file for hour H about 5 minutes later, so the sensor waits for it before ingesting.
 catchup=True: if the laptop was off, missed hours are fetched when Airflow restarts.
+After ingestion, Hive flattens that hour into the silver tables.
 """
 
 from datetime import timedelta
 
 import pendulum
 from airflow.decorators import dag, task
+from airflow.operators.bash import BashOperator
 
+from ingestion.config import REPO_ROOT
 from ingestion.gharchive import is_published
 from ingestion.pipeline import ingest_hour
 
@@ -35,7 +38,19 @@ def gh_hourly_ingest():
     def ingest(data_interval_start=None) -> dict:
         return ingest_hour(data_interval_start)
 
-    wait_for_file() >> ingest()
+    # One Hive build at a time: catch-up after a long sleep queues hours instead of
+    # starting several Hive sessions at once on a 10 GB WSL.
+    build_silver = BashOperator(
+        task_id="build_silver",
+        bash_command=(
+            f"bash {REPO_ROOT}/scripts/build_silver.sh "
+            "{{ data_interval_start.strftime('%Y-%m-%d') }} {{ data_interval_start.hour }}"
+        ),
+        max_active_tis_per_dag=1,
+        execution_timeout=timedelta(minutes=30),
+    )
+
+    wait_for_file() >> ingest() >> build_silver
 
 
 gh_hourly_ingest()
