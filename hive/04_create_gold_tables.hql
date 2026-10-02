@@ -41,3 +41,22 @@ CREATE EXTERNAL TABLE IF NOT EXISTS gold_trending_daily (
     dt STRING, rank_no INT, repo STRING, stars BIGINT, baseline DOUBLE, baseline_days INT, trend_score DOUBLE)
 ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t' STORED AS TEXTFILE
 LOCATION '/gitlytics/gold/trending_daily';
+
+-- Written by pig/bot_scoring.pig (scripts/run_bot_scoring.sh), registered here for querying
+CREATE EXTERNAL TABLE IF NOT EXISTS gold_bot_scores (
+    era STRING, actor_login STRING, events BIGINT, distinct_repos BIGINT, active_hours BIGINT, stars BIGINT,
+    peak_events_hour BIGINT, peak_repos_hour BIGINT, peak_stars_hour BIGINT, max_hours_in_day BIGINT,
+    top_type_share DOUBLE, max_same_repo_stars BIGINT, farmed_repos_starred BIGINT,
+    rules_fired STRING, bot_score INT, is_labelled_bot INT)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t' STORED AS TEXTFILE
+LOCATION '/gitlytics/gold/bot_scores';
+
+CREATE EXTERNAL TABLE IF NOT EXISTS gold_farmed_repos (
+    era STRING, repo STRING, starrers BIGINT, farm_starrers BIGINT, farm_pct DOUBLE)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t' STORED AS TEXTFILE
+LOCATION '/gitlytics/gold/farmed_repos';
+
+CREATE EXTERNAL TABLE IF NOT EXISTS gold_bot_rule_eval (
+    era STRING, is_labelled_bot INT, accounts BIGINT, flagged BIGINT)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t' STORED AS TEXTFILE
+LOCATION '/gitlytics/gold/bot_rule_eval';

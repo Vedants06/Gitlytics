@@ -13,7 +13,8 @@ grep -q " NameNode$" <<<"$running" || start-dfs.sh
 grep -q " ResourceManager$" <<<"$running" || start-yarn.sh
 # Pig (and job counters in the report) need the JobHistory server; without it every job
 # stalls ~20 s retrying port 10020.
-grep -q " JobHistoryServer$" <<<"$running" || mapred --daemon start historyserver
+# setsid: a daemon started from a short-lived WSL session is otherwise killed when that session closes.
+grep -q " JobHistoryServer$" <<<"$running" || setsid -f mapred --daemon start historyserver < /dev/null > /dev/null 2>&1
 
 (cd "$GITLYTICS_HOME" && docker compose up -d)
 

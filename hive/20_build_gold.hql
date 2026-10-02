@@ -23,13 +23,14 @@ SELECT era, event_type, count(*), sum(CASE WHEN is_bot THEN 1 ELSE 0 END),
 FROM events
 GROUP BY era, event_type;
 
--- 4. Top 20 repos by human stars, per day
+-- 4. Top 20 repos by distinct human starrers, per day (an account starring the same repo
+--    thousands of times in a loop counts once)
 INSERT OVERWRITE TABLE gold_top_starred
 SELECT dt, rnk, repo, stars
 FROM (
     SELECT dt, concat(repo_owner, '/', repo) AS repo, stars,
            row_number() OVER (PARTITION BY dt ORDER BY stars DESC, repo_owner, repo) AS rnk
-    FROM (SELECT dt, repo_owner, repo, count(*) AS stars
+    FROM (SELECT dt, repo_owner, repo, count(DISTINCT actor_login) AS stars
           FROM stars WHERE NOT is_bot GROUP BY dt, repo_owner, repo) daily
 ) ranked
 WHERE rnk <= 20;
@@ -69,7 +70,7 @@ FROM (
 ) ranked
 WHERE rnk <= 50;
 
--- 8. Trending: a repo's human stars on a complete day vs its average over the previous
+-- 8. Trending: a repo's distinct human starrers on a complete day vs its average over the previous
 --    complete days (up to 7). trend_score = (stars - baseline) / sqrt(baseline + 1).
 --    Only complete days (24 hours ingested) count, so partial days never look like drops.
 WITH complete_days AS (
@@ -81,7 +82,7 @@ day_window AS (
     GROUP BY d.dt
 ),
 daily AS (
-    SELECT s.dt, s.repo_owner, s.repo, count(*) AS stars
+    SELECT s.dt, s.repo_owner, s.repo, count(DISTINCT s.actor_login) AS stars
     FROM stars s JOIN complete_days c ON s.dt = c.dt
     WHERE NOT s.is_bot
     GROUP BY s.dt, s.repo_owner, s.repo
