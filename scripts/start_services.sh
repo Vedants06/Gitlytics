@@ -23,3 +23,4 @@ jps | sort -k2
 echo
 echo "HDFS  http://localhost:9870   YARN  http://localhost:8088   JobHistory  http://localhost:19888"
 echo "MinIO http://localhost:9001   Airflow http://localhost:8080 (after 'airflow standalone')"
+echo 'setsid $HADOOP_HOME/bin/mapred historyserver > /tmp/historyserver.log 2>&1 &' >> scripts/start_services.sh

@@ -11,12 +11,13 @@ for (pkg in required_packages) {
 
 message("[*] Running Chart 10: Generating Network Visualization...")
 
+dir.create("exports/plots", recursive = TRUE, showWarnings = FALSE)
+
 edges_tsv <- "exports/repo_graph_edges.tsv"
 comms_tsv <- "exports/repo_communities.tsv"
 
 if (!file.exists(edges_tsv) || !file.exists(comms_tsv)) {
   message("  [!] Graph exports not found. Creating a synthetic top community structure for igraph rendering...")
-  # Create synthetic graph data to draw a beautiful structural layout
   set.seed(42)
   n_nodes <- 30
   nodes <- paste0("repo_", 1:n_nodes)
@@ -24,37 +25,48 @@ if (!file.exists(edges_tsv) || !file.exists(comms_tsv)) {
   target_nodes <- sample(nodes, 50, replace = TRUE)
   weights <- round(runif(50, 1, 10))
   edges_dt <- data.table(source = source_nodes, target = target_nodes, weight = weights)
-  edges_dt <- edges_dt[source != target] # remove self-loops
+  edges_dt <- edges_dt[source != target]
 
   comms_dt <- data.table(
     repo = nodes,
-    community_id = sample(1:4, n_nodes, replace = TRUE)
+    community_id = sample(1:4, n_nodes, replace = TRUE),
+    community_size = 30,
+    degree = sample(1:10, n_nodes, replace = TRUE)
   )
 } else {
   edges_dt <- fread(edges_tsv)
   comms_dt <- fread(comms_tsv)
 }
 
-# Subsample top nodes by degree for rendering legibility (rendering >100 edges gets illegible)
-top_repos <- comms_dt[order(-degree)][head(1:50)] # Take top 50 highest connected nodes
+# Ensure degree column exists
+if (!"degree" %in% names(comms_dt)) {
+  comms_dt[, degree := 1]
+}
+
+# Subsample top nodes by degree
+setorder(comms_dt, -degree)
+top_repos <- head(comms_dt, 50)
 top_edges <- edges_dt[source %in% top_repos$repo & target %in% top_repos$repo]
+
+if (nrow(top_edges) == 0) {
+  top_edges <- head(edges_dt, 50)
+  top_repos <- comms_dt[repo %in% c(top_edges$source, top_edges$target)]
+}
 
 # Create igraph object
 g <- graph_from_data_frame(d = top_edges, vertices = top_repos, directed = FALSE)
+layout_matrix <- layout_with_fr(g)
 
-# Layout calculation
-layout_matrix <- layout_with_fr(g) # Fruchterman-Reingold force-directed layout
-
-# Save Plot Device
+# Save Plot
 png("exports/plots/chart_10_repo_communities_graph.png", width = 1000, height = 1000, res = 150)
 plot(
   g,
   layout = layout_matrix,
   vertex.color = factor(V(g)$community_id),
-  vertex.size = log(V(g)$degree + 1) * 4,
+  vertex.size = log(V(g)$degree + 2) * 5,
   vertex.label = V(g)$name,
   vertex.label.color = "black",
-  vertex.label.cex = 0.5,
+  vertex.label.cex = 0.6,
   vertex.label.dist = 0.8,
   edge.width = log(E(g)$weight + 1),
   edge.color = "gray80",
