@@ -34,3 +34,4 @@ airflow/airflow-webserver.pid
 
 # MapReduce build output
 mapreduce/build/
+docs/PRD.md
